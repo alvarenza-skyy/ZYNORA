@@ -1,0 +1,53 @@
+{
+ "w": 960,
+ "h": 1706,
+ "ringBox": [
+  355,
+  413,
+  628,
+  684
+ ],
+ "avatarRect": [
+  389,
+  446,
+  204,
+  204
+ ],
+ "name": {
+  "x0": 424,
+  "x1": 602,
+  "baseline": 713.5,
+  "capH": 22,
+  "color": "#ffffff"
+ },
+ "ranks": [
+  "imortal",
+  "glory",
+  "honor",
+  "mawi"
+ ],
+ "aliases": {
+  "imortal": [
+   "immortal",
+   "imortal",
+   "mythicimmortal",
+   "mi"
+  ],
+  "glory": [
+   "glory",
+   "mythicalglory",
+   "mg"
+  ],
+  "honor": [
+   "honor",
+   "mythicalhonor",
+   "mh"
+  ],
+  "mawi": [
+   "mawi",
+   "romawi",
+   "mythic",
+   "m"
+  ]
+ }
+}

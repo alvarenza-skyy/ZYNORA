@@ -1,0 +1,8 @@
+node_modules/
+session/
+keys.json
+database.json
+settings.json
+.env
+*.log
+cookies.txt

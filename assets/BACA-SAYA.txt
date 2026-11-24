@@ -1,0 +1,10 @@
+Aset fake lobby ZYNORA (.fakeml dan .fakeff)
+Ekstrak folder "assets" ini ke folder bot, di samping index.js:
+  unzip -o ~/storage/downloads/assets_fakelobby.zip -d ~/skybot/
+Hasilnya: ~/skybot/assets/fakeml, ~/skybot/assets/fakeff, ~/skybot/assets/fonts
+
+Font:
+- Inter-Regular.otf        : nama di lobi MLBB (lisensi SIL OFL)
+- texgyreheroscn-bold.otf  : cadangan nama FF (lisensi GUST Font License)
+- Rajdhani-SemiBold.ttf / Rajdhani-Bold.ttf (opsional): taruh di assets/fonts/ untuk nama FF yang lebih mirip game.
+  Jika tidak ada, bot mencoba mengunduhnya sendiri sekali, lalu memakai cadangan.
