@@ -9,24 +9,6 @@ ZYNORA adalah bot WhatsApp berbasis **Node.js** dan **Baileys** yang dapat dijal
 - **Platform panduan ini:** Android + Termux
 
 
----
-
-## Daftar isi
-
-1. [Fitur utama](#fitur-utama)
-2. [Persyaratan](#persyaratan)
-3. [Instalasi melalui Git Clone](#instalasi-melalui-git-clone)
-4. [Mengatur nomor owner](#mengatur-nomor-owner)
-5. [Menghubungkan WhatsApp](#menghubungkan-whatsapp)
-6. [Menjalankan dan menghentikan bot](#menjalankan-dan-menghentikan-bot)
-7. [Mengatur API key](#mengatur-api-key)
-8. [Perintah bot](#perintah-bot)
-9. [File dan data yang dibuat bot](#file-dan-data-yang-dibuat-bot)
-10. [Pemecahan masalah](#pemecahan-masalah)
-11. [Keamanan dan catatan](#keamanan-dan-catatan)
-
----
-
 ## Fitur utama
 
 ### Kreatif dan media
@@ -127,7 +109,7 @@ git clone https://github.com/alvarenza-skyy/ZYNORA.git
 Masuk ke folder repository:
 
 ```bash
-cd skybot
+cd ZYNORA
 ```
 
 ### 2. Pasang package Node.js
