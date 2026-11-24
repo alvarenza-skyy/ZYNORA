@@ -121,7 +121,7 @@ npm -v
 ### 1. Clone repository
 
 ```bash
-git clone https://github.com/alvarenza-skyy/ZYNORA-REPOSITORY.git
+git clone https://github.com/alvarenza-skyy/ZYNORA.git
 ```
 
 Masuk ke folder repository:
