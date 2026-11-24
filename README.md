@@ -8,7 +8,6 @@ ZYNORA adalah bot WhatsApp berbasis **Node.js** dan **Baileys** yang dapat dijal
 - **Versi pada `index.js`:** 1.17.0
 - **Platform panduan ini:** Android + Termux
 
-> README ini disesuaikan dengan `index.js` yang ada di repository. Beberapa fitur membutuhkan program tambahan atau API key, jadi tidak semuanya aktif hanya dengan memasang Node.js.
 
 ---
 
