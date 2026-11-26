@@ -71,6 +71,9 @@ settings.goodbyeMsg = settings.goodbyeMsg || {};
 settings.rules = settings.rules || {};
 settings.schedules = settings.schedules || [];
 settings.anticall = settings.anticall || false;
+settings.antikudeta = settings.antikudeta || {};
+settings.antiedit = settings.antiedit || {};
+settings.antidelete = settings.antidelete || {};
 const saveSettings = () => fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
 
 // ---------- Database user (limit, ban, premium, aktivitas) ----------
@@ -79,7 +82,7 @@ const DEFAULT_LIMIT = 30; // limit harian per user
 const ONLINE_WINDOW = 5 * 60 * 1000; // "online" = aktif ke bot dalam 5 menit terakhir
 // command yang memakai 1 limit
 const NO_SLOW_NOTICE = new Set(["broadcast", "bc", "off", "shutdown", "restart"]);
-const LIMITED = new Set(["s", "sticker", "stiker", "brat", "bratgreen", "bratvid", "bratvid2", "emojimix", "toimg", "tiktok", "tt", "tiktokmp3", "ttmp3", "tomp3", "tts", "ssweb", "rvo", "play", "ytmp3", "ytmp4", "dl", "imagine", "tourl", "ocr", "smeme", "attp", "ttp", "bass", "nightcore", "slow", "tovn", "blur", "hd", "upscale", "removebg", "stalk", "iqc", "tqc", "wq", "fakeff", "fakeml", "tanyagambar", "aipdf", "fixcode", "kompres", "compress", "topdfteks", "pdfteks", "teks2pdf", "potong", "cut", "stikerbg"]);
+const LIMITED = new Set(["s", "sa", "sticker", "stiker", "brat", "bratgreen", "bratvid", "bratvid2", "emojimix", "toimg", "tiktok", "tt", "tiktokmp3", "ttmp3", "tomp3", "tts", "ssweb", "rvo", "play", "ytmp3", "ytmp4", "dl", "imagine", "tourl", "ocr", "smeme", "attp", "ttp", "bass", "nightcore", "slow", "tovn", "blur", "hd", "upscale", "removebg", "stalk", "iqc", "tqc", "wq", "fakeff", "fakeml", "tanyagambar", "aipdf", "fixcode", "kompres", "compress", "topdfteks", "pdfteks", "teks2pdf", "potong", "cut", "stikerbg"]);
 
 let db = { resetDate: "", users: {} };
 try { db = { ...db, ...JSON.parse(fs.readFileSync(DB_FILE, "utf8")) }; } catch {}
@@ -336,7 +339,12 @@ const tmpFile = (ext) =>
   path.join(TMP, `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`);
 const cleanup = (...files) => files.forEach((f) => { try { fs.existsSync(f) && fs.unlinkSync(f); } catch {} });
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-const numOf = (jid = "") => jid.split(":")[0].split("@")[0];
+const LID_PN = new Map(), PN_LID = new Map(); // peta LID -> nomor WA asli (diisi oleh blok ZYNORA PLUS)
+const numOf = (jid = "") => {
+  jid = String(jid ?? "");
+  const n = jid.split(":")[0].split("@")[0];
+  return /@lid\b/.test(jid) ? LID_PN.get(n) || n : n;
+};
 
 const randomSkyCode = () => "SKYY" + Array.from({ length: 4 }, () => "123456789ABCDEFGHJKLMNPQRSTVWXYZ"[Math.floor(Math.random() * 32)]).join("");
 
@@ -1305,6 +1313,7 @@ async function groupMetaCached(sock, jid) {
   if (c && Date.now() - c.t < 60000) return c.meta;
   const meta = await sock.groupMetadata(jid);
   gmCache.set(jid, { t: Date.now(), meta });
+  try { zpLearnMeta(meta); if (settings.antikudeta?.[jid]) zpSnap(jid, meta); } catch {}
   return meta;
 }
 async function isGroupAdmin(sock, jid, num) {
@@ -1344,33 +1353,10 @@ const msgCache = new Map();
 function cacheMsg(msg) {
   if (msg.key.fromMe || !msg.message || msg.message.protocolMessage) return;
   msgCache.set(msg.key.id, msg);
-  if (msgCache.size > 400) msgCache.delete(msgCache.keys().next().value);
+  if (msgCache.size > 1500) msgCache.delete(msgCache.keys().next().value);
+  try { zpPrefetch(msg); } catch {}
 }
-async function handleRevoke(sock, msg, pm) {
-  const chat = msg.key.remoteJid;
-  if (!settings.antidelete[chat]) return;
-  const orig = msgCache.get(pm.key?.id);
-  if (!orig) return;
-  const who = orig.key.participant || orig.key.remoteJid;
-  const inner = unwrap(orig.message) || {};
-  const head = `🗑️ *Pesan dihapus* oleh @${numOf(who)}`;
-  try {
-    const text = inner.conversation || inner.extendedTextMessage?.text;
-    if (text) return await sock.sendMessage(chat, { text: `${head}:\n\n${text}`, mentions: [who] });
-    for (const t of ["imageMessage", "videoMessage", "audioMessage", "stickerMessage"]) {
-      if (!inner[t]) continue;
-      const type = t.replace("Message", "");
-      const buf = await streamToBuffer(await downloadContentFromMessage(inner[t], type));
-      await sock.sendMessage(chat, { text: head, mentions: [who] });
-      const cap = inner[t].caption || "";
-      const payload =
-        type === "image" ? { image: buf, caption: cap } :
-        type === "video" ? { video: buf, caption: cap } :
-        type === "audio" ? { audio: buf, mimetype: "audio/mp4", ptt: !!inner[t].ptt } : { sticker: buf };
-      return await sock.sendMessage(chat, payload);
-    }
-  } catch {}
-}
+// handleRevoke / handleEdit ada di blok ZYNORA PLUS
 
 // ---------- Pengingat ----------
 const scheduledRem = new Set();
@@ -4111,6 +4097,7 @@ const menuText = (pushName) => `╭━━━「 ⚡ ZYNORA 」━━━╮
 ╭━━━「 🎨 STICKER STUDIO 」━━━╮
 ┃
 ┃  ".s" → Foto/video jadi stiker
+┃  ".sa" → Stiker bersuara (video bersuara / gambar+VN, maks 10 dtk)
 ┃  ".brat <teks>" → Stiker Brat
 ┃  ".bratgreen <teks>" → Brat hijau
 ┃  ".bratvid <teks>" → Brat animasi
@@ -4268,7 +4255,9 @@ ${zMenu()}╭━━━「 📥 DOWNLOAD & MEDIA 」━━━╮
 ┃  ".antivirtex on/off" → Anti virtex
 ┃  ".antitoxic on/off" → Anti kata kasar
 ┃  ".addtoxic" ".deltoxic" ".listtoxic" → Kata terlarang
-┃  ".antidelete on/off" → Anti hapus
+┃  ".antidelete on/off" → Anti hapus (dikirim ulang + tag)
+┃  ".antiedit on/off" → Anti edit pesan
+┃  ".antikudeta on/off" → Anti kudeta admin
 ┃  ".groupinfo" → Info grup
 ┃  ".listadmin" → Daftar admin
 ┃  ".listonline" → Anggota online
@@ -7841,6 +7830,9 @@ async function handleMessage(sock, msg) {
   cacheMsg(msg);
   const isGroup = jid.endsWith("@g.us");
   const sender = msg.key.fromMe ? sock.user.id : msg.key.participant || jid;
+  zpLearnKey(msg.key);
+  if (!msg.key.fromMe && /@lid/.test(sender) && !LID_PN.has(zpDig(sender))) await zpResolveLid(sock, sender);
+  if (isGroup && body.startsWith(".")) await groupMetaCached(sock, jid).catch(() => {});
   const senderNum = numOf(sender);
 
   // ----- Catat aktivitas user & cek owner -----
@@ -7950,12 +7942,12 @@ async function handleMessage(sock, msg) {
   const args = match[2].trim();
 
   const limitState = { charged: false, refunded: false };
-  const reply = (text) => {
+  const reply = (text, mentions) => {
     // salah format command tidak memotong limit
     if (limitState.charged && !limitState.refunded && user && typeof text === "string" && USAGE_RE.test(text)) {
       limitState.refunded = true; user.limit++; user.used--; saveDB();
     }
-    return sock.sendMessage(jid, { text }, { quoted: msg });
+    return sock.sendMessage(jid, mentions ? { text, mentions } : { text }, { quoted: msg });
   };
   const react = (emoji) => sock.sendMessage(jid, { react: { text: emoji, key: msg.key } }).catch(() => {});
   const ctxInfo = m.extendedTextMessage?.contextInfo;
@@ -8740,6 +8732,31 @@ async function handleMessage(sock, msg) {
       }
 
       // ---------- ANTI SPAM / ANTI DELETE / WARN / INFO GRUP ----------
+      // ---------- STIKER BERSUARA / ANTI KUDETA / ANTI EDIT ----------
+      case "sa":
+      case "soundsticker":
+      case "stikersuara":
+        return zpSA({ sock, msg, jid, reply, react });
+
+      case "antiedit":
+      case "antikudeta": {
+        if (!isGroup) return reply("Khusus grup.");
+        const meta = await groupMetaCached(sock, jid);
+        const me = meta.participants.find((p) => [p.id, p.phoneNumber, p.lid].some((x) => x && numOf(x) === senderNum));
+        const isCreator = me?.admin === "superadmin" || (meta.owner && numOf(meta.owner) === senderNum);
+        if (cmd === "antikudeta" ? !(isOwner || isCreator) : !(isOwner || me?.admin)) {
+          return reply(cmd === "antikudeta" ? "Hanya owner bot atau pembuat grup yang bisa mengatur *.antikudeta* (supaya admin nakal tidak bisa mematikannya)." : "Hanya admin grup yang bisa mengatur *.antiedit*.");
+        }
+        const v = args.toLowerCase();
+        if (!["on", "off"].includes(v)) return reply(`Contoh: *.${cmd} on*\nStatus grup ini: *${settings[cmd][jid] ? "on" : "off"}*`);
+        if (v === "on") { settings[cmd][jid] = true; if (cmd === "antikudeta") zpSnap(jid, meta); } else delete settings[cmd][jid];
+        saveSettings();
+        if (cmd === "antiedit") return reply(v === "on" ? "✏️ Anti-edit *aktif*: pesan yang diedit akan ditampilkan versi aslinya + tag pengirim." : "Anti-edit dimatikan.");
+        return reply(v === "on"
+          ? `🛡️ Anti-kudeta *aktif*: admin yang menurunkan admin / mengeluarkan anggota akan dicopot, korbannya dikembalikan (dan dijadikan admin lagi).${botIsAdmin(sock, meta) ? "" : "\n⚠️ Bot belum admin, jadikan bot admin dulu agar berfungsi."}`
+          : "Anti-kudeta dimatikan.");
+      }
+
       case "antispam":
       case "antidelete": {
         if (!(await needAdmin())) return;
@@ -8749,7 +8766,7 @@ async function handleMessage(sock, msg) {
         saveSettings();
         return reply(cmd === "antispam"
           ? (v === "on" ? "🛡️ Anti-spam *aktif*: 6 pesan dalam 8 detik = peringatan, 3 peringatan = kick (bot harus admin)." : "Anti-spam dimatikan.")
-          : (v === "on" ? "🗑️ Anti-delete *aktif*: pesan yang dihapus akan dikirim ulang." : "Anti-delete dimatikan."));
+          : (v === "on" ? "🗑️ Anti-delete *aktif*: pesan yang dihapus dikirim ulang dengan tag pengirimnya." : "Anti-delete dimatikan."));
       }
 
       case "groupinfo":
@@ -9967,7 +9984,7 @@ async function handleMessage(sock, msg) {
         if (!(await ownerOnly())) return;
         const n = resolveTarget();
         if (!n) return reply("Contoh: *.cekuser @tag* / reply / *.cekuser 628xxx*");
-        return reply(userInfoText(n));
+        return reply(userInfoText(n).replace(/^Nomor  : .*$/m, "Nomor  : @" + n), [toJid(n)]);
       }
 
       case "ban":
@@ -9978,14 +9995,15 @@ async function handleMessage(sock, msg) {
         if (n === OWNER || settings.owners.includes(n)) return reply("Tidak bisa dilakukan pada owner.");
         getUser(n).banned = cmd === "ban";
         saveDB();
-        return reply(cmd === "ban" ? `🚫 ${n} berhasil dibanned.` : `✅ ${n} berhasil di-unban.`);
+        return reply(cmd === "ban" ? `🚫 @${n} berhasil dibanned.` : `✅ @${n} berhasil di-unban.`, [toJid(n)]);
       }
 
       case "listban": {
         if (!(await ownerOnly())) return;
+        await zpResolveKeys(sock, Object.entries(db.users).filter(([, u]) => u.banned).map(([k]) => k));
         const list = Object.entries(db.users).filter(([, u]) => u.banned);
         if (!list.length) return reply("Tidak ada user yang dibanned.");
-        return reply(`🚫 *Daftar Ban (${list.length})*\n` + list.map(([n, u], i) => `${i + 1}. ${u.name || "-"} (${n})`).join("\n"));
+        return reply(`🚫 *Daftar Ban (${list.length})*\n` + list.map(([n, u], i) => `${i + 1}. @${zpDisp(n)}${u.name ? " • " + u.name : ""}`).join("\n"), list.map(([n]) => zpJid(n)));
       }
 
       case "addlimit":
@@ -9997,7 +10015,7 @@ async function handleMessage(sock, msg) {
         const u = getUser(n);
         u.limit = cmd === "addlimit" ? u.limit + amount : amount;
         saveDB();
-        return reply(`✅ Limit ${n} sekarang: *${u.limit}*`);
+        return reply(`✅ Limit @${n} sekarang: *${u.limit}*`, [toJid(n)]);
       }
 
       case "resetlimit": {
@@ -10014,14 +10032,15 @@ async function handleMessage(sock, msg) {
         if (!n) return reply(`Contoh: *.${cmd} @tag* / reply / *.${cmd} 628xxx*`);
         getUser(n).premium = cmd === "addprem";
         saveDB();
-        return reply(cmd === "addprem" ? `💎 ${n} sekarang premium (limit tak terbatas).` : `✅ Premium ${n} dicabut.`);
+        return reply(cmd === "addprem" ? `💎 @${n} sekarang premium (limit tak terbatas).` : `✅ Premium @${n} dicabut.`, [toJid(n)]);
       }
 
       case "listprem": {
         if (!(await ownerOnly())) return;
+        await zpResolveKeys(sock, Object.entries(db.users).filter(([, u]) => u.premium).map(([k]) => k));
         const list = Object.entries(db.users).filter(([, u]) => u.premium);
         if (!list.length) return reply("Belum ada user premium.");
-        return reply(`💎 *Daftar Premium (${list.length})*\n` + list.map(([n, u], i) => `${i + 1}. ${u.name || "-"} (${n})`).join("\n"));
+        return reply(`💎 *Daftar Premium (${list.length})*\n` + list.map(([n, u], i) => `${i + 1}. @${zpDisp(n)}${u.name ? " • " + u.name : ""}`).join("\n"), list.map(([n]) => zpJid(n)));
       }
 
       case "listonline": {
@@ -10091,7 +10110,8 @@ async function handleMessage(sock, msg) {
         const top = all.sort((a, b) => b[1].used - a[1].used).slice(0, 10);
         return reply(
           `👥 *Total user: ${all.length}*\n\n🏆 *Top 10 pemakai*\n` +
-          top.map(([n, u], i) => `${i + 1}. ${u.name || "-"} (${n}) • ${u.used}x`).join("\n")
+          top.map(([n, u], i) => `${i + 1}. @${zpDisp(n)}${u.name ? " • " + u.name : ""} • ${u.used}x`).join("\n"),
+          top.map(([n]) => zpJid(n))
         );
       }
 
@@ -10163,7 +10183,7 @@ async function handleMessage(sock, msg) {
         if (cmd === "addowner") { if (!settings.owners.includes(n)) settings.owners.push(n); }
         else settings.owners = settings.owners.filter((x) => x !== n);
         saveSettings();
-        return reply(cmd === "addowner" ? `✅ ${n} jadi owner.` : `✅ ${n} dihapus dari owner.`);
+        return reply(cmd === "addowner" ? `✅ @${n} jadi owner.` : `✅ @${n} dihapus dari owner.`, [toJid(n)]);
       }
 
       case "listowner": {
@@ -10247,7 +10267,7 @@ function registerExitHandlers() {
 }
 
 function disposeSock(sock) {
-  for (const ev of ["messages.upsert", "group-participants.update", "creds.update", "connection.update", "call"]) {
+  for (const ev of ["messages.upsert", "group-participants.update", "creds.update", "connection.update", "call", "messages.update", "lid-mapping.update", "contacts.upsert", "contacts.update"]) {
     try { sock.ev.removeAllListeners(ev); } catch {}
   }
 }
@@ -10284,6 +10304,7 @@ function onConnectionUpdate(u, ctx) {
 /** Pesan masuk. Pesan yang sama tidak diproses dua kali (mis. terkirim ulang setelah koneksi pulih). */
 function onUpsert(sock, { messages }) {
   for (const msg of messages || []) {
+    try { zpLearnKey(msg.key); } catch {}
     const id = msg.key?.id;
     if (id) {
       const k = (msg.key.remoteJid || "") + "|" + id;
@@ -10293,6 +10314,10 @@ function onUpsert(sock, { messages }) {
     }
     const pm = msg.message?.protocolMessage;
     if (pm && (pm.type === 0 || pm.type === "REVOKE")) { handleRevoke(sock, msg, pm).catch(() => {}); continue; }
+    if (pm && (pm.type === 14 || pm.type === "MESSAGE_EDIT") && pm.editedMessage) {
+      handleEdit(sock, { ...pm.key, remoteJid: pm.key?.remoteJid || msg.key.remoteJid, participant: pm.key?.participant || msg.key.participant }, pm.editedMessage).catch(() => {});
+      continue;
+    }
     voRemember(msg);
     handleMessage(sock, msg).catch((e) => console.error(e.message));
   }
@@ -10312,6 +10337,423 @@ async function startWithRetry(startFn = () => start(), sleepFn = sleep, maxTries
   }
   return false;
 }
+
+// ===== ZYNORA PLUS BEGIN (identitas LID/nomor, .sa, antikudeta, antidelete, antiedit) =====
+const ZP_PTT = process.env.SA_PTT === "1"; // ubah ke 1 bila suara stiker tidak terputar di HP
+const zpDig = (j) => String(j || "").split(":")[0].split("@")[0];
+const zpSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------- Pemetaan LID <-> nomor WA (supaya @tag = nomor asli) ----------
+let zpLidTimer = null;
+(function zpLoadLid() {
+  try {
+    const o = JSON.parse(fs.readFileSync(path.join(__dirname, "lidmap.json"), "utf8"));
+    for (const [l, p] of Object.entries(o)) { LID_PN.set(l, p); PN_LID.set(p, l); }
+  } catch {}
+})();
+function zpSaveLid() {
+  clearTimeout(zpLidTimer);
+  zpLidTimer = setTimeout(() => { try { fs.writeFileSync(path.join(__dirname, "lidmap.json"), JSON.stringify(Object.fromEntries(LID_PN))); } catch {} }, 3000);
+}
+function zpMergeUser(lidNum, pnNum) {
+  const a = db.users[lidNum];
+  if (a) {
+    const b = db.users[pnNum];
+    if (!b) db.users[pnNum] = a;
+    else {
+      b.banned = !!(b.banned || a.banned); b.premium = !!(b.premium || a.premium);
+      b.used = (b.used || 0) + (a.used || 0);
+      b.limit = Math.min(b.limit ?? DEFAULT_LIMIT, a.limit ?? DEFAULT_LIMIT);
+      if (!b.name) b.name = a.name;
+      if (!b.afk && a.afk) b.afk = a.afk;
+      b.lastSeen = Math.max(b.lastSeen || 0, a.lastSeen || 0);
+    }
+    delete db.users[lidNum]; saveDB();
+  }
+  for (const k of ["owners", "admins"]) {
+    const arr = settings[k];
+    if (Array.isArray(arr) && arr.includes(lidNum)) { settings[k] = [...new Set(arr.map((x) => (x === lidNum ? pnNum : x)))]; saveSettings(); }
+  }
+}
+function zpLearn(lid, pn) {
+  const l = zpDig(lid), p = zpDig(pn);
+  if (!l || !p || l === p || !/^\d{6,20}$/.test(p) || !/@lid/.test(String(lid))) return;
+  if (!/@s\.whatsapp\.net/.test(String(pn))) return;
+  if (LID_PN.get(l) === p) return;
+  LID_PN.set(l, p); PN_LID.set(p, l); zpSaveLid();
+  try { zpMergeUser(l, p); } catch {}
+}
+function zpLearnKey(key) {
+  if (!key) return;
+  const pairs = [[key.participant, key.participantAlt || key.participantPn || key.senderPn], [key.remoteJid, key.remoteJidAlt]];
+  for (const [a, b] of pairs) {
+    if (!a || !b) continue;
+    if (/@lid/.test(a)) zpLearn(a, b); else if (/@lid/.test(b)) zpLearn(b, a);
+  }
+}
+function zpLearnMeta(meta) {
+  for (const p of meta?.participants || []) {
+    const lid = /@lid/.test(p.id || "") ? p.id : p.lid;
+    const pn = /@s\.whatsapp\.net/.test(p.id || "") ? p.id : p.phoneNumber;
+    if (lid && pn) zpLearn(lid, pn);
+  }
+}
+async function zpResolveLid(sock, jid) {
+  const u = zpDig(jid);
+  if (LID_PN.has(u)) return LID_PN.get(u);
+  try {
+    const pn = await sock.signalRepository?.lidMapping?.getPNForLID?.(`${u}@lid`);
+    if (pn) { zpLearn(`${u}@lid`, pn); return LID_PN.get(u) || null; }
+  } catch {}
+  return null;
+}
+async function zpResolveKeys(sock, keys) {
+  let n = 0;
+  for (const k of keys) {
+    if (n >= 30) break;
+    if (/^\d{14,}$/.test(k) && !LID_PN.has(k) && !PN_LID.has(k)) { n++; await zpResolveLid(sock, k + "@lid"); }
+  }
+}
+const zpDisp = (n) => LID_PN.get(n) || n;
+const zpJid = (n) => `${zpDisp(n)}@s.whatsapp.net`;
+
+// Jid mention terbaik: nomor asli bila diketahui, jika tidak LID apa adanya
+function zpPrefJid(j) {
+  const s = String(j || ""); const m = s.match(/^([^:@]+)(?::\d+)?@(.+)$/);
+  if (!m) return s;
+  if (m[2] === "lid") { const pn = LID_PN.get(m[1]); return pn ? `${pn}@s.whatsapp.net` : `${m[1]}@lid`; }
+  return `${m[1]}@${m[2]}`;
+}
+function zpPartIndex(chat) {
+  const c = gmCache.get(chat); if (!c?.meta) return null;
+  if (c.zidx && c.zidx.src === c.meta) return c.zidx.map;
+  const map = new Map();
+  for (const p of c.meta.participants || []) {
+    const ids = [p.id, p.phoneNumber, p.lid].filter(Boolean);
+    let pnJid = ids.find((x) => /@s\.whatsapp\.net/.test(x));
+    if (!pnJid) { const l = ids.find((x) => /@lid/.test(x)); const pn = l && LID_PN.get(zpDig(l)); if (pn) pnJid = `${pn}@s.whatsapp.net`; }
+    const jid = pnJid || p.id;
+    for (const x of ids) map.set(zpDig(x), jid);
+    if (pnJid) { const l = PN_LID.get(zpDig(pnJid)); if (l) map.set(l, jid); }
+  }
+  c.zidx = { src: c.meta, map };
+  return map;
+}
+/** Samakan teks "@angka" dengan mentions: nomor asli + tag sungguhan (nama kontak muncul). */
+function zpNormalizeOutgoing(chat, content) {
+  if (!content || typeof content !== "object") return content;
+  const key = typeof content.text === "string" ? "text" : typeof content.caption === "string" ? "caption" : null;
+  const hasM = Array.isArray(content.mentions) || Array.isArray(content.contextInfo?.mentionedJid);
+  if (!key && !hasM) return content;
+  let text = key ? content[key] : null;
+  const subst = new Map(), out = [];
+  const add = (j) => {
+    const p = zpPrefJid(j); if (!out.includes(p)) out.push(p);
+    const o = zpDig(j), n = zpDig(p); if (o !== n) subst.set(o, n);
+  };
+  for (const j of content.mentions || content.contextInfo?.mentionedJid || []) add(j);
+  if (text && String(chat).endsWith("@g.us")) {
+    const idx = zpPartIndex(chat);
+    if (idx) for (const mt of text.matchAll(/@(\d{7,20})/g)) {
+      const hit = idx.get(mt[1]);
+      if (hit) { if (!out.includes(hit)) out.push(hit); if (zpDig(hit) !== mt[1]) subst.set(mt[1], zpDig(hit)); }
+    }
+  }
+  if (!out.length) return content;
+  const res = { ...content };
+  if (key && subst.size) res[key] = text.replace(/@(\d{7,20})/g, (s, d) => (subst.has(d) ? "@" + subst.get(d) : s));
+  if (Array.isArray(content.contextInfo?.mentionedJid)) res.contextInfo = { ...content.contextInfo, mentionedJid: out };
+  else res.mentions = out;
+  return res;
+}
+
+// ---------- .sa : stiker bersuara (WhatsApp sound sticker) ----------
+let zpPatched = false;
+function zpPatchProto() {
+  if (zpPatched) return true;
+  const M = proto?.Message;
+  if (!M?.StickerMessage?.encode || !M.AudioMessage?.encode || !M.FutureProofMessage?.encode) return false;
+  const eM = M.encode, eS = M.StickerMessage.encode;
+  // StickerMessage.audioMessage = field 26 ; Message.audioStickerMessage (FutureProofMessage) = field 134
+  M.StickerMessage.encode = function (m, w) {
+    w = eS.call(this, m, w);
+    if (m && m.audioMessage) { w.uint32(210).fork(); M.AudioMessage.encode(m.audioMessage, w); w.ldelim(); }
+    return w;
+  };
+  M.encode = function (m, w) {
+    w = eM.call(this, m, w);
+    if (m && m.audioStickerMessage) { w.uint32(1074).fork(); M.FutureProofMessage.encode(m.audioStickerMessage, w); w.ldelim(); }
+    return w;
+  };
+  return (zpPatched = true);
+}
+async function zpProbe(file) {
+  let dur = 0, audio = false;
+  try { dur = parseFloat(String(await run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file])).trim()) || 0; } catch {}
+  try { audio = /audio/.test(String(await run("ffprobe", ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0", file]))); } catch {}
+  return { dur, audio };
+}
+async function zpToOgg(buf) {
+  const inp = tmpFile("bin"), out = tmpFile("ogg");
+  fs.writeFileSync(inp, buf);
+  try {
+    const pr = await zpProbe(inp);
+    if (!pr.audio) throw new Error("NOAUDIO");
+    await run("ffmpeg", ["-y", "-i", inp, "-vn", "-t", "10", "-ac", "1", "-ar", "48000", "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", out], { timeout: 120000 });
+    const ogg = fs.readFileSync(out);
+    const o = await zpProbe(out);
+    return { ogg, secs: Math.max(1, Math.min(10, Math.ceil(o.dur || Math.min(pr.dur, 10) || 1))), cut: pr.dur > 10.5 };
+  } finally { cleanup(inp, out); }
+}
+async function zpToWebp(buf, isVideo) {
+  const inp = tmpFile("bin"); fs.writeFileSync(inp, buf);
+  const tries = isVideo ? [[15, 50, 512], [12, 40, 512], [10, 32, 448], [8, 25, 384]] : [[1, 75, 512], [1, 50, 512]];
+  let best = null;
+  try {
+    for (const [fps, q, sz] of tries) {
+      const out = tmpFile("webp");
+      const vf = `scale=${sz}:${sz}:force_original_aspect_ratio=decrease,${isVideo ? `fps=${fps},` : ""}format=rgba,pad=${sz}:${sz}:(ow-iw)/2:(oh-ih)/2:color=#00000000`;
+      const a = ["-y", "-i", inp];
+      if (isVideo) a.push("-t", "10");
+      a.push("-vf", vf, "-c:v", "libwebp", "-q:v", String(q), "-compression_level", "6");
+      a.push(...(isVideo ? ["-loop", "0", "-an"] : ["-frames:v", "1"]), out);
+      await run("ffmpeg", a, { timeout: 180000 });
+      const b = fs.readFileSync(out); cleanup(out);
+      if (!best || b.length < best.length) best = b;
+      if (b.length <= 500000) { best = b; break; }
+    }
+  } finally { cleanup(inp); }
+  if (!best || best.length > 1000000) throw new Error("TOOBIG");
+  try { const e = webpWithExif(best, BOT_NAME, "Sound Sticker"); if (e.length <= Math.max(best.length + 4000, 1000000)) best = e; } catch {}
+  return best;
+}
+async function zpSendSoundSticker(sock, jid, quoted, webp, ogg, secs, animated) {
+  if (!zpPatchProto()) throw new Error("PROTO");
+  const up = { upload: sock.waUploadToServer };
+  const st = await prepareWAMessageMedia({ sticker: webp }, up);
+  const au = await prepareWAMessageMedia({ audio: ogg, mimetype: "audio/ogg; codecs=opus", ptt: ZP_PTT, seconds: secs }, up);
+  const sticker = st.stickerMessage;
+  sticker.mimetype = "image/webp"; sticker.isAnimated = !!animated; sticker.width = 512; sticker.height = 512;
+  sticker.audioMessage = au.audioMessage;
+  if (quoted?.key) {
+    const ci = { stanzaId: quoted.key.id, participant: quoted.key.participant || quoted.key.remoteJid, quotedMessage: quoted.message };
+    const exp = Object.values(unwrap(quoted.message) || {}).find((v) => v && typeof v === "object" && v.contextInfo)?.contextInfo?.expiration;
+    if (exp) ci.expiration = exp;
+    sticker.contextInfo = ci;
+  }
+  const message = { audioStickerMessage: { message: { stickerMessage: sticker } } };
+  let id;
+  try { id = require("@whiskeysockets/baileys").generateMessageID(); } catch { id = "3EB0" + require("crypto").randomBytes(9).toString("hex").toUpperCase(); }
+  await sock.relayMessage(jid, message, { messageId: id });
+  sentCache.set(id, message);
+  return id;
+}
+async function zpSA(ctx) {
+  const { sock, msg, jid, reply, react } = ctx;
+  const usage = "Kirim/reply video bersuara dengan *.sa*\nAtau kirim gambar/video dengan caption *.sa* sambil reply voice note/audio (maks 10 detik).";
+  const m = unwrap(msg.message) || {};
+  const ci = m.imageMessage?.contextInfo || m.videoMessage?.contextInfo || m.extendedTextMessage?.contextInfo;
+  const q = unwrap(ci?.quotedMessage) || {};
+  const pickT = (o, ts) => { for (const t of ts) if (o?.[t]) return { type: t.replace("Message", ""), content: o[t] }; return null; };
+  const ownV = pickT(m, ["imageMessage", "videoMessage"]);
+  const qV = pickT(q, ["imageMessage", "videoMessage"]);
+  const qA = pickT(q, ["audioMessage"]);
+  const vis = ownV || qV;
+  if (!vis) return reply(usage);
+  react("⏳");
+  try {
+    const visBuf = await download(vis);
+    let audioBuf = null;
+    if (qA) audioBuf = await download(qA);
+    else if (vis.type === "video") audioBuf = visBuf;
+    else if (qV?.type === "video" && qV !== vis) audioBuf = await download(qV);
+    if (!audioBuf) return reply(usage);
+    let au;
+    try { au = await zpToOgg(audioBuf); }
+    catch (e) { if (e.message === "NOAUDIO") return reply("Hanya video yang punya suara yang bisa dipakai.\nAtau reply voice note/audio saat mengirim gambar/video dengan *.sa*."); throw e; }
+    const webp = await zpToWebp(visBuf, vis.type === "video");
+    try {
+      await zpSendSoundSticker(sock, jid, msg, webp, au.ogg, au.secs, vis.type === "video");
+    } catch (e) {
+      console.log("[SA] kirim sound sticker gagal:", e.message);
+      await sock.sendMessage(jid, { sticker: webp }, { quoted: msg });
+      await reply("⚠️ Stiker bersuara gagal dikirim, dikirim sebagai stiker biasa.\n" + String(e.message).slice(0, 120));
+      return react("⚠️");
+    }
+    react("✅");
+    if (au.cut) await reply("ℹ️ Suara/video dipotong ke 10 detik pertama.");
+  } catch (e) {
+    console.log("[SA]", e.message);
+    react("❌");
+    return reply(e.message === "TOOBIG" ? "Hasil stiker terlalu besar, pakai video yang lebih pendek/sederhana." : "Gagal membuat stiker bersuara: " + String(e.message).slice(0, 150));
+  }
+}
+
+// ---------- Cache pesan, antidelete, antiedit ----------
+const zpBuf = new Map();
+const zpHandled = new Set();
+const zpOnce = (k) => { if (zpHandled.has(k)) return false; zpHandled.add(k); if (zpHandled.size > 3000) zpHandled.delete(zpHandled.values().next().value); return true; };
+const zpText = (inner) => inner.conversation || inner.extendedTextMessage?.text || inner.imageMessage?.caption || inner.videoMessage?.caption || inner.documentMessage?.caption || "";
+function zpPrefetch(msg) {
+  const chat = msg.key.remoteJid;
+  if (!settings.antidelete?.[chat]) return;
+  const inner = unwrap(msg.message) || {};
+  for (const t of ["imageMessage", "videoMessage", "audioMessage", "stickerMessage", "documentMessage"]) {
+    const c = inner[t]; if (!c) continue;
+    if (Number(c.fileLength || 0) > 12 * 1024 * 1024) return;
+    downloadContentFromMessage(c, t.replace("Message", "")).then(streamToBuffer).then((b) => {
+      zpBuf.set(msg.key.id, { type: t.replace("Message", ""), buf: b });
+      if (zpBuf.size > 40) zpBuf.delete(zpBuf.keys().next().value);
+    }).catch(() => {});
+    return;
+  }
+}
+async function zpSendMedia(sock, chat, type, buf, c, caption, head, mentions) {
+  if (type === "image" || type === "video") return sock.sendMessage(chat, { [type]: buf, caption: caption ? head + "\n\n" + caption : head, mentions });
+  await sock.sendMessage(chat, { text: head, mentions });
+  if (type === "audio") return sock.sendMessage(chat, { audio: buf, mimetype: "audio/mp4", ptt: !!c.ptt });
+  if (type === "sticker") return sock.sendMessage(chat, { sticker: buf });
+  return sock.sendMessage(chat, { document: buf, mimetype: c.mimetype || "application/octet-stream", fileName: c.fileName || "file" });
+}
+async function handleRevoke(sock, msg, pm) {
+  const chat = msg.key.remoteJid;
+  if (!settings.antidelete[chat]) return;
+  const id = pm.key?.id, orig = msgCache.get(id);
+  if (!orig || !zpOnce("del|" + id)) return;
+  const who = orig.key.participant || orig.key.remoteJid;
+  const by = msg.key.participant || msg.key.remoteJid;
+  const mentions = [who];
+  let head = `🗑️ *Pesan dihapus* oleh @${numOf(who)}`;
+  if (numOf(by) !== numOf(who)) { head += ` (dihapus oleh @${numOf(by)})`; mentions.push(by); }
+  const inner = unwrap(orig.message) || {};
+  try {
+    const text = inner.conversation || inner.extendedTextMessage?.text;
+    if (text) return await sock.sendMessage(chat, { text: `${head}:\n\n${text}`, mentions });
+    for (const t of ["imageMessage", "videoMessage", "audioMessage", "stickerMessage", "documentMessage"]) {
+      const c = inner[t]; if (!c) continue;
+      const type = t.replace("Message", "");
+      const pre = zpBuf.get(id);
+      const buf = pre?.buf || (await streamToBuffer(await downloadContentFromMessage(c, type)));
+      return await zpSendMedia(sock, chat, type, buf, c, c.caption || "", head, mentions);
+    }
+    await sock.sendMessage(chat, { text: `${head}\n_(jenis pesan tidak bisa ditampilkan ulang)_`, mentions });
+  } catch (e) {
+    await sock.sendMessage(chat, { text: `${head}\n_(isi tidak bisa dipulihkan)_`, mentions }).catch(() => {});
+  }
+}
+async function handleEdit(sock, key, newMsg) {
+  const chat = key?.remoteJid;
+  if (!chat || key.fromMe || !settings.antiedit?.[chat]) return;
+  const nt = zpText(unwrap(newMsg) || {});
+  if (!zpOnce("edit|" + key.id + "|" + nt.slice(0, 200))) return;
+  const orig = msgCache.get(key.id);
+  const who = key.participant || orig?.key?.participant || chat;
+  const old = orig ? zpText(unwrap(orig.message) || {}) : null;
+  if (old !== null && old === nt) return;
+  if (orig) orig.message = newMsg;
+  let txt = `✏️ *Pesan diedit* oleh @${numOf(who)}\n\n`;
+  txt += old === null ? "_(pesan asli tidak tersimpan di bot)_" : `*Pesan asli:*\n${old || "-"}`;
+  txt += `\n\n*Diubah menjadi:*\n${nt || "-"}`;
+  await sock.sendMessage(chat, { text: txt, mentions: [who] });
+}
+
+// ---------- Anti kudeta ----------
+const zpAdminSnap = new Map();
+function zpSnap(gid, meta) {
+  const s = new Set();
+  for (const p of meta?.participants || []) {
+    if (!p.admin) continue;
+    for (const k of [p.id, p.phoneNumber, p.lid]) if (k) s.add(zpDig(k));
+    const pn = LID_PN.get(zpDig(p.id)); if (pn) s.add(pn);
+  }
+  zpAdminSnap.set(gid, s);
+}
+async function zpTry(fn, tries = 3, gap = 1500) {
+  for (let i = 0; i < tries; i++) { try { const r = await fn(); return r ?? true; } catch {} await zpSleep(gap); }
+  return false;
+}
+async function zpKudeta(sock, ev) {
+  const gid = ev.id;
+  if (!settings.antikudeta?.[gid]) return;
+  const action = ev.action;
+  const parts = (ev.participants || []).map((p) => (typeof p === "string" ? { id: p } : { id: p.id || p.phoneNumber, pn: p.phoneNumber, lid: p.lid }));
+  const snap = zpAdminSnap.get(gid) || new Set();
+  const refresh = async () => { try { await zpSleep(1200); gmCache.delete(gid); const m = await groupMetaCached(sock, gid); zpSnap(gid, m); } catch {} };
+  if (!["demote", "remove"].includes(action)) { await refresh(); return; }
+  const author = ev.author || ""; if (!author) return;
+  const authorNum = numOf(ev.authorPn || author);
+  const botNums = [numOf(sock.user?.id || ""), numOf(sock.user?.lid || "")].filter(Boolean);
+  if (botNums.includes(authorNum) || botNums.includes(zpDig(author))) { await refresh(); return; }
+  if (action === "remove" && parts.length === 1 && [parts[0].id, parts[0].pn, parts[0].lid].some((x) => x && zpDig(x) === zpDig(author))) { await refresh(); return; } // keluar sendiri
+  const ek = `${gid}|${action}|${parts.map((p) => zpDig(p.id)).join(",")}|${zpDig(author)}`;
+  if (!zpOnce("kud|" + ek)) return;
+  let meta; try { gmCache.delete(gid); meta = await groupMetaCached(sock, gid); } catch { return; }
+  const aPart = meta.participants.find((p) => [p.id, p.phoneNumber, p.lid].some((x) => x && (zpDig(x) === zpDig(author) || numOf(x) === authorNum)));
+  const exempt = isOwnerNum(authorNum) || (settings.admins || []).includes(authorNum) || aPart?.admin === "superadmin" || (meta.owner && numOf(meta.owner) === authorNum);
+  if (exempt) { await refresh(); return; }
+  const botAdmin = botIsAdmin(sock, meta);
+  const vJid = (p) => [p.pn, p.id].filter(Boolean);
+  const authorJids = [...new Set([author, ev.authorPn].filter(Boolean))];
+  const wasAdmin = (p) => [p.id, p.pn, p.lid].some((x) => x && snap.has(zpDig(x)));
+  const notes = [], mentions = [author, ...parts.map((p) => p.pn || p.id)];
+  if (!botAdmin) {
+    await sock.sendMessage(gid, { text: `🛡️ *Anti-Kudeta*: @${authorNum} ${action === "demote" ? "menurunkan admin" : "mengeluarkan anggota"}, tapi bot bukan admin sehingga tidak bisa memulihkan. Jadikan bot admin!`, mentions });
+    return;
+  }
+  // 1) copot admin si pelaku
+  let demoted = false;
+  for (const j of authorJids) { demoted = !!(await zpTry(() => sock.groupParticipantsUpdate(gid, [j], "demote"), 2, 800)); if (demoted) break; }
+  notes.push(demoted ? `• @${authorNum} dicopot dari admin` : `• @${authorNum} gagal dicopot (mungkin pembuat grup)`);
+  // 2) pulihkan korban
+  for (const p of parts) {
+    const tag = "@" + numOf(p.pn || p.id);
+    if (action === "demote") {
+      let ok = false;
+      for (const j of vJid(p)) { ok = !!(await zpTry(() => sock.groupParticipantsUpdate(gid, [j], "promote"))); if (ok) break; }
+      notes.push(ok ? `• ${tag} dijadikan admin lagi` : `• ${tag} gagal dikembalikan jadi admin`);
+    } else {
+      let added = false, invited = false, usedJid = null;
+      for (const j of vJid(p)) {
+        try {
+          const r = await sock.groupParticipantsUpdate(gid, [j], "add");
+          const st = String(r?.[0]?.status || "");
+          if (st === "200" || st === "409") { added = true; usedJid = j; break; }
+          if (st === "403") {
+            try {
+              const code = await sock.groupInviteCode(gid);
+              await sock.sendMessage(zpPrefJid(j), { text: `Kamu dikeluarkan dari grup *${meta.subject}* tanpa alasan. Kembali lewat link ini:\nhttps://chat.whatsapp.com/${code}` });
+              invited = true;
+            } catch {}
+            break;
+          }
+        } catch {}
+      }
+      if (added) {
+        notes.push(`• ${tag} ditambahkan kembali`);
+        if (wasAdmin(p)) {
+          await zpSleep(1500);
+          const ok = !!(await zpTry(() => sock.groupParticipantsUpdate(gid, [usedJid], "promote")));
+          notes.push(ok ? `• ${tag} dijadikan admin lagi` : `• ${tag} gagal dijadikan admin lagi`);
+        }
+      } else notes.push(invited ? `• ${tag} diprivasi, link undangan dikirim ke chat pribadinya` : `• ${tag} gagal ditambahkan kembali`);
+    }
+  }
+  await sock.sendMessage(gid, { text: `🛡️ *Anti-Kudeta aktif*\n@${authorNum} ${action === "demote" ? "menurunkan admin" : "mengeluarkan anggota"} tanpa persetujuan.\n\n${notes.join("\n")}`, mentions });
+  await refresh();
+}
+
+function zpBindSock(sock) {
+  zpPatchProto();
+  sock.ev.on("lid-mapping.update", (u) => { try { if (u?.lid && u?.pn) zpLearn(/@/.test(u.lid) ? u.lid : u.lid + "@lid", /@/.test(u.pn) ? u.pn : u.pn + "@s.whatsapp.net"); } catch {} });
+  const contacts = (cs) => { for (const c of cs || []) { try { const lid = /@lid/.test(c.id || "") ? c.id : c.lid; const pn = /@s\.whatsapp\.net/.test(c.id || "") ? c.id : c.phoneNumber; if (lid && pn) zpLearn(lid, pn); } catch {} } };
+  sock.ev.on("contacts.upsert", contacts); sock.ev.on("contacts.update", contacts);
+  sock.ev.on("messages.update", (ups) => { for (const u of ups || []) { const em = u.update?.message?.editedMessage?.message; if (em) handleEdit(sock, u.key, em).catch(() => {}); } });
+}
+async function zpOnOpen(sock) {
+  try { if (sock.user?.lid && sock.user?.id) zpLearn(sock.user.lid, sock.user.id.replace(/:\d+@/, "@")); } catch {}
+  for (const gid of Object.keys(settings.antikudeta || {})) { try { zpSnap(gid, await groupMetaCached(sock, gid)); await zpSleep(300); } catch {} }
+}
+// ===== ZYNORA PLUS END =====
 
 async function start() {
   const { state, saveCreds } = await useMultiFileAuthState("session");
@@ -10334,12 +10776,14 @@ async function start() {
   // simpan pesan terkirim supaya bisa dikirim ulang bila penerima meminta (mengurangi "Menunggu pesan ini")
   const rawSend = sock.sendMessage.bind(sock);
   sock.sendMessage = async (...a) => {
+    try { a[1] = zpNormalizeOutgoing(a[0], a[1]); } catch {}
     const r = await rawSend(...a);
     if (r?.key?.id && r.message) { sentCache.set(r.key.id, r.message); if (sentCache.size > 200) sentCache.delete(sentCache.keys().next().value); }
     return r;
   };
 
   currentSock = sock;
+  zpBindSock(sock);
 
   sock.ev.on("creds.update", saveCreds);
 
@@ -10348,7 +10792,7 @@ async function start() {
     if (u.qr) { lastQR = u.qr; if (pairMode === "qr") printQR(u.qr); }
     onConnectionUpdate(u, {
       state: connState,
-      onOpen: () => { restoreReminders(); showPanel({ banner: false, status: "Terhubung ✓" }); menuPrewarm(); },
+      onOpen: () => { zpOnOpen(sock); restoreReminders(); showPanel({ banner: false, status: "Terhubung ✓" }); menuPrewarm(); },
       exit: (c) => process.exit(c),
       restart: (ms) => setTimeout(() => { disposeSock(sock); connState.reconnecting = false; startWithRetry(); }, ms),
     });
@@ -10385,7 +10829,9 @@ async function start() {
   sock.ev.on("messages.upsert", (u) => onUpsert(sock, u));
 
   // Sambutan & perpisahan
-  sock.ev.on("group-participants.update", async ({ id, participants, action }) => {
+  sock.ev.on("group-participants.update", async (ev) => {
+    const { id, participants, action } = ev;
+    zpKudeta(sock, ev).catch((e) => console.log("[KUDETA]", e.message));
     gmCache.delete(id);
     await handleParticipants(sock, id, participants, action);
   });
