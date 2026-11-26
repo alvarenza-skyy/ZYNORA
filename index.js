@@ -10342,6 +10342,7 @@ async function startWithRetry(startFn = () => start(), sleepFn = sleep, maxTries
 const ZP_PTT = process.env.SA_PTT === "1"; // ubah ke 1 bila suara stiker tidak terputar di HP
 const zpDig = (j) => String(j || "").split(":")[0].split("@")[0];
 const zpSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const zpT = (p, ms, label) => { let t; return Promise.race([p, new Promise((_, rj) => { t = setTimeout(() => rj(new Error(`${label} timeout (${Math.round(ms / 1000)}s)`)), ms); })]).finally(() => clearTimeout(t)); };
 
 // ---------- Pemetaan LID <-> nomor WA (supaya @tag = nomor asli) ----------
 let zpLidTimer = null;
@@ -10402,7 +10403,7 @@ async function zpResolveLid(sock, jid) {
   const u = zpDig(jid);
   if (LID_PN.has(u)) return LID_PN.get(u);
   try {
-    const pn = await sock.signalRepository?.lidMapping?.getPNForLID?.(`${u}@lid`);
+    const pn = await zpT(Promise.resolve(sock.signalRepository?.lidMapping?.getPNForLID?.(`${u}@lid`)), 3000, "lid");
     if (pn) { zpLearn(`${u}@lid`, pn); return LID_PN.get(u) || null; }
   } catch {}
   return null;
@@ -10477,12 +10478,12 @@ function zpPatchProto() {
   // StickerMessage.audioMessage = field 26 ; Message.audioStickerMessage (FutureProofMessage) = field 134
   M.StickerMessage.encode = function (m, w) {
     w = eS.call(this, m, w);
-    if (m && m.audioMessage) { w.uint32(210).fork(); M.AudioMessage.encode(m.audioMessage, w); w.ldelim(); }
+    if (m && m.audioMessage) { w.uint32(210).fork(); M.AudioMessage.encode(m.audioMessage, w); (w.ldelim || w.join).call(w); }
     return w;
   };
   M.encode = function (m, w) {
     w = eM.call(this, m, w);
-    if (m && m.audioStickerMessage) { w.uint32(1074).fork(); M.FutureProofMessage.encode(m.audioStickerMessage, w); w.ldelim(); }
+    if (m && m.audioStickerMessage) { w.uint32(1074).fork(); M.FutureProofMessage.encode(m.audioStickerMessage, w); (w.ldelim || w.join).call(w); }
     return w;
   };
   return (zpPatched = true);
@@ -10499,7 +10500,7 @@ async function zpToOgg(buf) {
   try {
     const pr = await zpProbe(inp);
     if (!pr.audio) throw new Error("NOAUDIO");
-    await run("ffmpeg", ["-y", "-i", inp, "-vn", "-t", "10", "-ac", "1", "-ar", "48000", "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", out], { timeout: 120000 });
+    await run("ffmpeg", ["-y", "-t", "10", "-i", inp, "-vn", "-ac", "1", "-ar", "48000", "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", out], { timeout: 60000 });
     const ogg = fs.readFileSync(out);
     const o = await zpProbe(out);
     return { ogg, secs: Math.max(1, Math.min(10, Math.ceil(o.dur || Math.min(pr.dur, 10) || 1))), cut: pr.dur > 10.5 };
@@ -10507,31 +10508,34 @@ async function zpToOgg(buf) {
 }
 async function zpToWebp(buf, isVideo) {
   const inp = tmpFile("bin"); fs.writeFileSync(inp, buf);
-  const tries = isVideo ? [[15, 50, 512], [12, 40, 512], [10, 32, 448], [8, 25, 384]] : [[1, 75, 512], [1, 50, 512]];
-  let best = null;
+  const tries = isVideo ? [[10, 40, 512], [8, 30, 384], [6, 22, 320]] : [[1, 75, 512], [1, 50, 512]];
+  let best = null, lastErr = null;
   try {
     for (const [fps, q, sz] of tries) {
       const out = tmpFile("webp");
-      const vf = `scale=${sz}:${sz}:force_original_aspect_ratio=decrease,${isVideo ? `fps=${fps},` : ""}format=rgba,pad=${sz}:${sz}:(ow-iw)/2:(oh-ih)/2:color=#00000000`;
-      const a = ["-y", "-i", inp];
+      const vf = `${isVideo ? `fps=${fps},` : ""}scale=${sz}:${sz}:force_original_aspect_ratio=decrease:flags=fast_bilinear,format=rgba,pad=${sz}:${sz}:(ow-iw)/2:(oh-ih)/2:color=#00000000`;
+      const a = ["-y"];
       if (isVideo) a.push("-t", "10");
-      a.push("-vf", vf, "-c:v", "libwebp", "-q:v", String(q), "-compression_level", "6");
+      a.push("-threads", "2", "-i", inp);
+      a.push("-vf", vf, "-c:v", "libwebp", "-q:v", String(q), "-compression_level", "3");
       a.push(...(isVideo ? ["-loop", "0", "-an"] : ["-frames:v", "1"]), out);
-      await run("ffmpeg", a, { timeout: 180000 });
+      try { await run("ffmpeg", a, { timeout: 90000 }); }
+      catch (e) { cleanup(out); lastErr = e; console.log("[SA] ffmpeg webp gagal/timeout, coba setelan lebih ringan:", e.message); continue; }
       const b = fs.readFileSync(out); cleanup(out);
       if (!best || b.length < best.length) best = b;
       if (b.length <= 500000) { best = b; break; }
     }
   } finally { cleanup(inp); }
-  if (!best || best.length > 1000000) throw new Error("TOOBIG");
+  if (!best) throw lastErr || new Error("ffmpeg gagal");
+  if (best.length > 1000000) throw new Error("TOOBIG");
   try { const e = webpWithExif(best, BOT_NAME, "Sound Sticker"); if (e.length <= Math.max(best.length + 4000, 1000000)) best = e; } catch {}
   return best;
 }
 async function zpSendSoundSticker(sock, jid, quoted, webp, ogg, secs, animated) {
   if (!zpPatchProto()) throw new Error("PROTO");
   const up = { upload: sock.waUploadToServer };
-  const st = await prepareWAMessageMedia({ sticker: webp }, up);
-  const au = await prepareWAMessageMedia({ audio: ogg, mimetype: "audio/ogg; codecs=opus", ptt: ZP_PTT, seconds: secs }, up);
+  const st = await zpT(prepareWAMessageMedia({ sticker: webp }, up), 60000, "upload stiker");
+  const au = await zpT(prepareWAMessageMedia({ audio: ogg, mimetype: "audio/ogg; codecs=opus", ptt: ZP_PTT, seconds: secs }, up), 60000, "upload audio");
   const sticker = st.stickerMessage;
   sticker.mimetype = "image/webp"; sticker.isAnimated = !!animated; sticker.width = 512; sticker.height = 512;
   sticker.audioMessage = au.audioMessage;
@@ -10544,7 +10548,7 @@ async function zpSendSoundSticker(sock, jid, quoted, webp, ogg, secs, animated) 
   const message = { audioStickerMessage: { message: { stickerMessage: sticker } } };
   let id;
   try { id = require("@whiskeysockets/baileys").generateMessageID(); } catch { id = "3EB0" + require("crypto").randomBytes(9).toString("hex").toUpperCase(); }
-  await sock.relayMessage(jid, message, { messageId: id });
+  await zpT(sock.relayMessage(jid, message, { messageId: id }), 45000, "kirim pesan");
   sentCache.set(id, message);
   return id;
 }
@@ -10561,31 +10565,38 @@ async function zpSA(ctx) {
   const vis = ownV || qV;
   if (!vis) return reply(usage);
   react("⏳");
+  let stage = "unduh media";
+  const L = (x) => { stage = x; console.log("[SA] " + x); };
   try {
-    const visBuf = await download(vis);
+    L("unduh media");
+    const visBuf = await zpT(download(vis), 60000, "unduh media");
     let audioBuf = null;
-    if (qA) audioBuf = await download(qA);
+    if (qA) audioBuf = await zpT(download(qA), 60000, "unduh audio");
     else if (vis.type === "video") audioBuf = visBuf;
-    else if (qV?.type === "video" && qV !== vis) audioBuf = await download(qV);
+    else if (qV?.type === "video" && qV !== vis) audioBuf = await zpT(download(qV), 60000, "unduh video suara");
     if (!audioBuf) return reply(usage);
+    L("konversi audio");
     let au;
     try { au = await zpToOgg(audioBuf); }
     catch (e) { if (e.message === "NOAUDIO") return reply("Hanya video yang punya suara yang bisa dipakai.\nAtau reply voice note/audio saat mengirim gambar/video dengan *.sa*."); throw e; }
-    const webp = await zpToWebp(visBuf, vis.type === "video");
+    L("konversi stiker");
+    const webp = await zpT(zpToWebp(visBuf, vis.type === "video"), 240000, "konversi stiker");
+    L("kirim sound sticker");
     try {
       await zpSendSoundSticker(sock, jid, msg, webp, au.ogg, au.secs, vis.type === "video");
     } catch (e) {
-      console.log("[SA] kirim sound sticker gagal:", e.message);
+      console.log("[SA] sound sticker gagal di tahap kirim:", e.stack || e.message);
       await sock.sendMessage(jid, { sticker: webp }, { quoted: msg });
-      await reply("⚠️ Stiker bersuara gagal dikirim, dikirim sebagai stiker biasa.\n" + String(e.message).slice(0, 120));
-      return react("⚠️");
+      await sock.sendMessage(jid, { audio: au.ogg, mimetype: "audio/ogg; codecs=opus", ptt: true }, { quoted: msg }).catch(() => {});
+      react("⚠️");
+      return reply("⚠️ Sound sticker asli gagal dikirim (" + String(e.message).slice(0, 140) + "), jadi dikirim stiker + voice note terpisah.");
     }
     react("✅");
     if (au.cut) await reply("ℹ️ Suara/video dipotong ke 10 detik pertama.");
   } catch (e) {
-    console.log("[SA]", e.message);
+    console.log("[SA] gagal di tahap " + stage + ":", e.stack || e.message);
     react("❌");
-    return reply(e.message === "TOOBIG" ? "Hasil stiker terlalu besar, pakai video yang lebih pendek/sederhana." : "Gagal membuat stiker bersuara: " + String(e.message).slice(0, 150));
+    return reply(e.message === "TOOBIG" ? "Hasil stiker terlalu besar, pakai video yang lebih pendek/sederhana." : `Gagal membuat stiker bersuara (tahap: ${stage}): ` + String(e.message).slice(0, 150));
   }
 }
 
