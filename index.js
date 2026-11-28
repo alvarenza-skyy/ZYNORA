@@ -4097,7 +4097,8 @@ const menuText = (pushName) => `╭━━━「 ⚡ ZYNORA 」━━━╮
 ╭━━━「 🎨 STICKER STUDIO 」━━━╮
 ┃
 ┃  ".s" → Foto/video jadi stiker
-┃  ".sa" → Stiker bersuara (video bersuara / gambar+VN, maks 10 dtk)
+┃  ".sa" → Stiker bersuara (video bersuara / gambar+VN)
+┃  ".sa 20s" → potong 20 dtk pertama • ".sa 5-25" → detik 5 s/d 25 (maks 60 dtk)
 ┃  ".brat <teks>" → Stiker Brat
 ┃  ".bratgreen <teks>" → Brat hijau
 ┃  ".bratvid <teks>" → Brat animasi
@@ -8736,7 +8737,7 @@ async function handleMessage(sock, msg) {
       case "sa":
       case "soundsticker":
       case "stikersuara":
-        return zpSA({ sock, msg, jid, reply, react });
+        return zpSA({ sock, msg, jid, reply, react, args });
 
       case "antiedit":
       case "antikudeta": {
@@ -10494,36 +10495,88 @@ async function zpProbe(file) {
   try { audio = /audio/.test(String(await run("ffprobe", ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0", file]))); } catch {}
   return { dur, audio };
 }
-async function zpToOgg(buf) {
+// Durasi .sa: bisa diubah lewat env SA_DEFAULT_SECS / SA_MAX_SECS (detik)
+const SA_DEFAULT_SECS = Math.max(1, Number(process.env.SA_DEFAULT_SECS) || 30); // dipakai bila tanpa angka
+const SA_MAX_SECS = Math.max(SA_DEFAULT_SECS, Number(process.env.SA_MAX_SECS) || 60); // batas atas
+const zpFmtS = (n) => String(Math.round(Number(n) * 10) / 10).replace(".", ",");
+/** "20" | "20s" | "7,5s" | "1m" | "1m30s" | "1:30" | "1:02:03" -> detik (NaN bila tidak valid) */
+function zpParseTime(t) {
+  t = String(t || "").trim().toLowerCase().replace(",", ".").replace(/(\d)\s+(?=[a-z])/g, "$1").replace(/([a-z])\s+(?=\d)/g, "$1"); // "20 detik" / "1m 30s"
+  if (!t) return NaN;
+  const num = /^\d+(?:\.\d+)?$/;
+  if (t.includes(":")) {
+    const p = t.split(":");
+    if (p.length > 3 || !p.every((x) => num.test(x))) return NaN;
+    return p.reduce((a, x) => a * 60 + Number(x), 0);
+  }
+  t = t.replace(/(minutes|minute|menit|mins|min)/g, "m").replace(/(seconds|second|detik|secs|sec|dtk)/g, "s");
+  const m = t.match(/^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s?)?$/);
+  if (!m || (m[1] == null && m[2] == null && m[3] == null)) return NaN;
+  return Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3] || 0);
+}
+/** Argumen .sa: "" | "20s" | "5-25" | "0:10-0:30"  ->  { start, dur|null, clamped } atau { err } */
+function zpParseSA(raw) {
+  const bad = `Format durasi tidak valid.\nContoh: *.sa 20s* (20 detik pertama) atau *.sa 5-25* (detik ke-5 sampai ke-25). Maks ${SA_MAX_SECS} detik.`;
+  const s = String(raw || "").trim().toLowerCase().replace(/\s*[-–—]\s*/g, "-");
+  if (!s) return { start: 0, dur: null, clamped: false };
+  let start = 0, dur;
+  if (s.includes("-")) {
+    const p = s.split("-");
+    if (p.length !== 2) return { err: bad };
+    start = zpParseTime(p[0]); const end = zpParseTime(p[1]);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return { err: bad };
+    if (end <= start) return { err: "Format potongan salah: detik akhir harus lebih besar dari detik awal.\nContoh: *.sa 5-25*" };
+    dur = end - start;
+  } else dur = zpParseTime(s);
+  if (!Number.isFinite(dur)) return { err: bad };
+  if (dur < 1) return { err: "Format durasi terlalu pendek: minimal 1 detik.\nContoh: *.sa 20s*" };
+  const clamped = dur > SA_MAX_SECS;
+  return { start, dur: clamped ? SA_MAX_SECS : dur, clamped };
+}
+async function zpToOgg(buf, start = 0, want = SA_DEFAULT_SECS) {
   const inp = tmpFile("bin"), out = tmpFile("ogg");
   fs.writeFileSync(inp, buf);
   try {
     const pr = await zpProbe(inp);
     if (!pr.audio) throw new Error("NOAUDIO");
-    await run("ffmpeg", ["-y", "-t", "10", "-i", inp, "-vn", "-ac", "1", "-ar", "48000", "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", out], { timeout: 60000 });
+    if (pr.dur && start >= pr.dur - 0.5) { const e = new Error("RANGE"); e.total = pr.dur; throw e; }
+    const use = pr.dur ? Math.min(want, pr.dur - start) : want; // durasi yang benar-benar dipakai
+    const a = ["-y"];
+    if (start > 0) a.push("-ss", String(start));
+    a.push("-t", String(use), "-i", inp, "-vn", "-ac", "1", "-ar", "48000", "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", out);
+    await run("ffmpeg", a, { timeout: 60000 + Math.round(use) * 2000 });
     const ogg = fs.readFileSync(out);
     const o = await zpProbe(out);
-    return { ogg, secs: Math.max(1, Math.min(10, Math.ceil(o.dur || Math.min(pr.dur, 10) || 1))), cut: pr.dur > 10.5 };
+    const real = o.dur || use;
+    return { ogg, secs: Math.max(1, Math.min(SA_MAX_SECS, Math.round(real))), used: Math.min(use, real) || use, total: pr.dur, trimmed: !!pr.dur && pr.dur - use > 0.5 };
   } finally { cleanup(inp, out); }
 }
-async function zpToWebp(buf, isVideo) {
+// Makin panjang durasi, makin kecil fps/ukuran/kualitas supaya muat batas WhatsApp (maks ~1 MB)
+const zpWebpPlan = (secs) =>
+  secs <= 10 ? [[10, 40, 512], [8, 30, 384], [6, 22, 320]]
+  : secs <= 20 ? [[8, 35, 384], [6, 28, 320], [5, 20, 256]]
+  : secs <= 40 ? [[6, 30, 320], [5, 22, 256], [4, 16, 224]]
+  : [[5, 24, 256], [4, 18, 224], [3, 14, 192]];
+const zpWebpTryMs = (secs, isVideo) => (isVideo ? Math.min(200000, 60000 + Math.round(secs) * 3000) : 60000);
+async function zpToWebp(buf, isVideo, start = 0, secs = SA_DEFAULT_SECS) {
   const inp = tmpFile("bin"); fs.writeFileSync(inp, buf);
-  const tries = isVideo ? [[10, 40, 512], [8, 30, 384], [6, 22, 320]] : [[1, 75, 512], [1, 50, 512]];
+  const tries = isVideo ? zpWebpPlan(secs) : [[1, 75, 512], [1, 50, 512]];
+  const okSize = secs <= 10 ? 500000 : 850000;
   let best = null, lastErr = null;
   try {
     for (const [fps, q, sz] of tries) {
       const out = tmpFile("webp");
       const vf = `${isVideo ? `fps=${fps},` : ""}scale=${sz}:${sz}:force_original_aspect_ratio=decrease:flags=fast_bilinear,format=rgba,pad=${sz}:${sz}:(ow-iw)/2:(oh-ih)/2:color=#00000000`;
       const a = ["-y"];
-      if (isVideo) a.push("-t", "10");
+      if (isVideo) { if (start > 0) a.push("-ss", String(start)); a.push("-t", String(secs)); }
       a.push("-threads", "2", "-i", inp);
-      a.push("-vf", vf, "-c:v", "libwebp", "-q:v", String(q), "-compression_level", "3");
+      a.push("-vf", vf, "-c:v", "libwebp", "-q:v", String(q), "-compression_level", secs > 10 ? "4" : "3");
       a.push(...(isVideo ? ["-loop", "0", "-an"] : ["-frames:v", "1"]), out);
-      try { await run("ffmpeg", a, { timeout: 90000 }); }
+      try { await run("ffmpeg", a, { timeout: zpWebpTryMs(secs, isVideo) }); }
       catch (e) { cleanup(out); lastErr = e; console.log("[SA] ffmpeg webp gagal/timeout, coba setelan lebih ringan:", e.message); continue; }
       const b = fs.readFileSync(out); cleanup(out);
       if (!best || b.length < best.length) best = b;
-      if (b.length <= 500000) { best = b; break; }
+      if (b.length <= okSize) { best = b; break; }
     }
   } finally { cleanup(inp); }
   if (!best) throw lastErr || new Error("ffmpeg gagal");
@@ -10554,7 +10607,10 @@ async function zpSendSoundSticker(sock, jid, quoted, webp, ogg, secs, animated) 
 }
 async function zpSA(ctx) {
   const { sock, msg, jid, reply, react } = ctx;
-  const usage = "Kirim/reply video bersuara dengan *.sa*\nAtau kirim gambar/video dengan caption *.sa* sambil reply voice note/audio (maks 10 detik).";
+  const usage = `Kirim/reply video bersuara dengan *.sa*\nAtau kirim gambar/video dengan caption *.sa* sambil reply voice note/audio.\n\n⏱️ Atur durasi / potong video:\n• *.sa 20s* → ambil 20 detik pertama\n• *.sa 5-25* → ambil detik ke-5 sampai ke-25\nTanpa angka = ${SA_DEFAULT_SECS} detik pertama (maks ${SA_MAX_SECS} detik).`;
+  const opt = zpParseSA(ctx.args);
+  if (opt.err) return reply(opt.err);
+  const want = opt.dur ?? SA_DEFAULT_SECS;
   const m = unwrap(msg.message) || {};
   const ci = m.imageMessage?.contextInfo || m.videoMessage?.contextInfo || m.extendedTextMessage?.contextInfo;
   const q = unwrap(ci?.quotedMessage) || {};
@@ -10577,13 +10633,18 @@ async function zpSA(ctx) {
     if (!audioBuf) return reply(usage);
     L("konversi audio");
     let au;
-    try { au = await zpToOgg(audioBuf); }
-    catch (e) { if (e.message === "NOAUDIO") return reply("Hanya video yang punya suara yang bisa dipakai.\nAtau reply voice note/audio saat mengirim gambar/video dengan *.sa*."); throw e; }
+    try { au = await zpToOgg(audioBuf, opt.start, want); }
+    catch (e) {
+      if (e.message === "NOAUDIO") return reply("Hanya video yang punya suara yang bisa dipakai.\nAtau reply voice note/audio saat mengirim gambar/video dengan *.sa*.");
+      if (e.message === "RANGE") return reply(`Format potongan salah: titik mulai (${zpFmtS(opt.start)} dtk) melebihi panjang media (${zpFmtS(e.total)} dtk).\nContoh: *.sa 0-${Math.max(1, Math.floor(e.total))}*`);
+      throw e;
+    }
+    const isVid = vis.type === "video";
     L("konversi stiker");
-    const webp = await zpT(zpToWebp(visBuf, vis.type === "video"), 240000, "konversi stiker");
+    const webp = await zpT(zpToWebp(visBuf, isVid, opt.start, au.used), zpWebpTryMs(au.used, isVid) * 3 + 20000, "konversi stiker");
     L("kirim sound sticker");
     try {
-      await zpSendSoundSticker(sock, jid, msg, webp, au.ogg, au.secs, vis.type === "video");
+      await zpSendSoundSticker(sock, jid, msg, webp, au.ogg, au.secs, isVid);
     } catch (e) {
       console.log("[SA] sound sticker gagal di tahap kirim:", e.stack || e.message);
       await sock.sendMessage(jid, { sticker: webp }, { quoted: msg });
@@ -10592,11 +10653,19 @@ async function zpSA(ctx) {
       return reply("⚠️ Sound sticker asli gagal dikirim (" + String(e.message).slice(0, 140) + "), jadi dikirim stiker + voice note terpisah.");
     }
     react("✅");
-    if (au.cut) await reply("ℹ️ Suara/video dipotong ke 10 detik pertama.");
+    const notes = [];
+    if (au.trimmed) {
+      notes.push(opt.start > 0
+        ? `ℹ️ Dipotong: detik ${zpFmtS(opt.start)}–${zpFmtS(opt.start + au.used)} (total media ${zpFmtS(au.total)} dtk).`
+        : `ℹ️ Dipotong ke ${zpFmtS(au.used)} detik pertama (total media ${zpFmtS(au.total)} dtk).`);
+      if (opt.dur === null) notes.push("Atur sendiri: *.sa 20s* atau *.sa 5-25*");
+    }
+    if (opt.clamped) notes.push(`ℹ️ Durasi dibatasi maksimal ${SA_MAX_SECS} detik.`);
+    if (notes.length) await reply(notes.join("\n"));
   } catch (e) {
     console.log("[SA] gagal di tahap " + stage + ":", e.stack || e.message);
     react("❌");
-    return reply(e.message === "TOOBIG" ? "Hasil stiker terlalu besar, pakai video yang lebih pendek/sederhana." : `Gagal membuat stiker bersuara (tahap: ${stage}): ` + String(e.message).slice(0, 150));
+    return reply(e.message === "TOOBIG" ? "Hasil stiker terlalu besar (>1 MB). Coba durasi lebih pendek, mis. *.sa 10s*, atau pakai video yang lebih sederhana." : `Gagal membuat stiker bersuara (tahap: ${stage}): ` + String(e.message).slice(0, 150));
   }
 }
 
